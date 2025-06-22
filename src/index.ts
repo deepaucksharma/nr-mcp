@@ -11,6 +11,9 @@ import { loadConfig, validateConfig } from './config';
 import { createLogger } from './utils/logger';
 import { HealthHandler } from './handlers/health';
 import { ServerInfo } from './types';
+import { NerdGraphClient } from './utils/nerdgraph-client';
+import { DiscoveryEngine } from './discovery';
+import { discoverSchemasTool, executeDiscoverSchemas } from './tools/discover-schemas';
 
 const SERVER_INFO: ServerInfo = {
   name: 'mcp-server-newrelic',
@@ -56,8 +59,24 @@ async function main() {
       },
     );
     
+    // Initialize core components
+    const nerdGraphClient = new NerdGraphClient({
+      apiKey: config.newrelic.apiKey,
+      region: config.newrelic.region,
+    });
+    
+    const discoveryEngine = new DiscoveryEngine({
+      nerdGraphClient,
+      cache: {
+        enabled: true,
+        maxSize: 1000,
+        defaultTtl: 3600
+      }
+    });
+    
     const healthHandler = new HealthHandler(config, logger.child());
     
+    // Register tools
     server.setRequestHandler(ListToolsRequestSchema, async () => {
       logger.debug('Handling list tools request');
       
@@ -72,10 +91,12 @@ async function main() {
               required: [],
             },
           },
+          discoverSchemasTool,
         ],
       };
     });
     
+    // Handle tool calls
     server.setRequestHandler(CallToolRequestSchema, async (request) => {
       logger.debug('Handling tool call request', { tool: request.params.name });
       
@@ -88,6 +109,21 @@ async function main() {
                 {
                   type: 'text',
                   text: JSON.stringify(health, null, 2),
+                },
+              ],
+            };
+          }
+          
+          case 'discover_schemas': {
+            const result = await executeDiscoverSchemas(
+              request.params.arguments as any,
+              discoveryEngine
+            );
+            return {
+              content: [
+                {
+                  type: 'text',
+                  text: JSON.stringify(result, null, 2),
                 },
               ],
             };
@@ -125,19 +161,21 @@ async function main() {
     const transport = new StdioServerTransport();
     await server.connect(transport);
     
-    logger.info('MCP Server New Relic started successfully');
-    
-    process.on('SIGINT', async () => {
-      logger.info('Received SIGINT, shutting down gracefully');
-      await server.close();
-      process.exit(0);
+    logger.info('MCP Server New Relic started successfully', {
+      discoveryEnabled: true,
+      cacheEnabled: true
     });
     
-    process.on('SIGTERM', async () => {
-      logger.info('Received SIGTERM, shutting down gracefully');
+    // Graceful shutdown
+    const shutdown = async () => {
+      logger.info('Shutting down gracefully');
+      discoveryEngine.destroy();
       await server.close();
       process.exit(0);
-    });
+    };
+    
+    process.on('SIGINT', shutdown);
+    process.on('SIGTERM', shutdown);
     
   } catch (error) {
     logger.error('Failed to start server', error as Error);

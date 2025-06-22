@@ -36,3 +36,6 @@ export interface ToolMetadata {
   requiresConfirmation: boolean;
   returnsNextCursor: boolean;
 }
+
+// Re-export NerdGraph types
+export * from './nerdgraph.js';
